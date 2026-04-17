@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Swap Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 32px 24px;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 24px;
+      color: #f8fafc;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    select {
+      background: #1e2130;
+      border: 1px solid #2d3348;
+      color: #e2e8f0;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      background: #1e2130;
+      border: 1px solid #2d3348;
+      border-radius: 10px;
+      padding: 16px 20px;
+      min-width: 140px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 6px;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+
+    .stat-value.green { color: #4ade80; }
+    .stat-value.red   { color: #f87171; }
+    .stat-value.blue  { color: #60a5fa; }
+
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 10px;
+      border: 1px solid #2d3348;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead tr {
+      background: #1e2130;
+    }
+
+    th {
+      text-align: left;
+      padding: 12px 16px;
+      font-weight: 500;
+      color: #94a3b8;
+      white-space: nowrap;
+      border-bottom: 1px solid #2d3348;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid #1e2130;
+      transition: background 0.1s;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #1a1f30; }
+
+    td {
+      padding: 12px 16px;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge-success { background: #14532d; color: #4ade80; }
+    .badge-failed  { background: #450a0a; color: #f87171; }
+
+    .dir-sol  { color: #fb923c; }
+    .dir-usdc { color: #60a5fa; }
+
+    .tx-link {
+      color: #818cf8;
+      text-decoration: none;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .tx-link:hover { text-decoration: underline; }
+
+    .error-cell {
+      color: #f87171;
+      max-width: 300px;
+      white-space: normal;
+      font-size: 12px;
+    }
+
+    .empty {
+      text-align: center;
+      padding: 48px;
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+  <h1>Swap Dashboard</h1>
+
+  <div class="controls">
+    <select id="dateSelect"></select>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">總筆數</div>
+      <div class="stat-value blue" id="statTotal">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">成功</div>
+      <div class="stat-value green" id="statSuccess">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">失敗</div>
+      <div class="stat-value red" id="statFailed">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">交易量（USDC）</div>
+      <div class="stat-value" id="statVolume">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">總手續費（SOL）</div>
+      <div class="stat-value red" id="statFee">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">平均手續費</div>
+      <div class="stat-value" id="statFeeAvg">—</div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>時間</th>
+          <th>方向</th>
+          <th>輸入金額</th>
+          <th>輸出金額</th>
+          <th>狀態</th>
+          <th>手續費（SOL）</th>
+          <th>Tx Hash</th>
+          <th>失敗原因</th>
+        </tr>
+      </thead>
+      <tbody id="txBody">
+        <tr><td colspan="8" class="empty">選擇日期載入資料</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    const dateSelect = document.getElementById("dateSelect");
+    const txBody = document.getElementById("txBody");
+
+    async function loadDates() {
+      const dates = await fetch("/api/dates").then(r => r.json());
+      dateSelect.innerHTML = dates.map(d => `<option value="${d}">${d}</option>`).join("");
+      if (dates.length > 0) loadTransactions(dates[0]);
+    }
+
+    async function loadTransactions(date) {
+      const rows = await fetch(`/api/transactions?date=${date}`).then(r => r.json());
+
+      if (rows.length === 0) {
+        txBody.innerHTML = `<tr><td colspan="8" class="empty">無資料</td></tr>`;
+        updateStats([]);
+        return;
+      }
+
+      updateStats(rows);
+
+      txBody.innerHTML = rows.map(r => {
+        const time = new Date(r.timestamp).toLocaleTimeString("zh-TW", { hour12: false });
+        const dirClass = r.direction === "SOL_TO_USDC" ? "dir-sol" : "dir-usdc";
+        const dirLabel = r.direction === "SOL_TO_USDC" ? "SOL → USDC" : "USDC → SOL";
+        const badge = r.status === "success"
+          ? `<span class="badge badge-success">成功</span>`
+          : `<span class="badge badge-failed">失敗</span>`;
+        const txLink = r.tx_hash
+          ? `<a class="tx-link" href="https://solscan.io/tx/${r.tx_hash}" target="_blank">${r.tx_hash.slice(0, 8)}…${r.tx_hash.slice(-6)}</a>`
+          : "—";
+        const input  = r.input_amount  ? `${r.input_amount} ${r.input_token}`   : "—";
+        const output = r.output_amount ? `${r.output_amount} ${r.output_token}` : "—";
+        const fee    = r.fee_sol ? `${r.fee_sol}` : "—";
+        const error  = r.error ? `<span class="error-cell">${escHtml(r.error)}</span>` : "—";
+
+        return `<tr>
+          <td>${time}</td>
+          <td class="${dirClass}">${dirLabel}</td>
+          <td>${input}</td>
+          <td>${output}</td>
+          <td>${badge}</td>
+          <td style="font-family:monospace;color:#fbbf24">${fee}</td>
+          <td>${txLink}</td>
+          <td>${error}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function updateStats(rows) {
+      const success = rows.filter(r => r.status === "success").length;
+      const failed  = rows.length - success;
+
+      let volume = 0;
+      rows.forEach(r => {
+        if (r.status !== "success") return;
+        if (r.direction === "SOL_TO_USDC") volume += parseFloat(r.output_amount) || 0;
+        else volume += parseFloat(r.input_amount) || 0;
+      });
+
+      let totalFee = 0;
+      let feeCount = 0;
+      rows.forEach(r => {
+        if (r.fee_sol) { totalFee += parseFloat(r.fee_sol) || 0; feeCount++; }
+      });
+
+      document.getElementById("statTotal").textContent   = rows.length;
+      document.getElementById("statSuccess").textContent = success;
+      document.getElementById("statFailed").textContent  = failed;
+      document.getElementById("statVolume").textContent  = volume.toFixed(2);
+      document.getElementById("statFee").textContent     = totalFee.toFixed(6) + " SOL";
+      document.getElementById("statFeeAvg").textContent  = feeCount > 0 ? (totalFee / feeCount).toFixed(6) + " SOL" : "—";
+    }
+
+    function escHtml(str) {
+      return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+
+    dateSelect.addEventListener("change", () => loadTransactions(dateSelect.value));
+    loadDates();
+  </script>
+</body>
+</html>
