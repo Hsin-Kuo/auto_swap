@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Swap Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -69,6 +70,24 @@
     .stat-value.green { color: #4ade80; }
     .stat-value.red   { color: #f87171; }
     .stat-value.blue  { color: #60a5fa; }
+
+    .chart-wrap {
+      background: #1e2130;
+      border: 1px solid #2d3348;
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+    }
+
+    .chart-title {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 16px;
+    }
+
+    .chart-wrap canvas {
+      max-height: 220px;
+    }
 
     .table-wrap {
       overflow-x: auto;
@@ -138,6 +157,9 @@
       font-size: 12px;
     }
 
+    .delta-neg { color: #f87171; font-family: monospace; }
+    .delta-pos { color: #4ade80; font-family: monospace; }
+
     .empty {
       text-align: center;
       padding: 48px;
@@ -177,6 +199,19 @@
       <div class="stat-label">平均手續費</div>
       <div class="stat-value" id="statFeeAvg">—</div>
     </div>
+    <div class="stat">
+      <div class="stat-label">累積 USDC 損耗</div>
+      <div class="stat-value red" id="statDeltaTotal">—</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">平均每輪損耗</div>
+      <div class="stat-value" id="statDeltaAvg">—</div>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <div class="chart-title">USDC 累積損耗曲線（每輪 round-trip）</div>
+    <canvas id="deltaChart" height="220"></canvas>
   </div>
 
   <div class="table-wrap">
@@ -189,12 +224,13 @@
           <th>輸出金額</th>
           <th>狀態</th>
           <th>手續費（SOL）</th>
+          <th>USDC Delta</th>
           <th>Tx Hash</th>
           <th>失敗原因</th>
         </tr>
       </thead>
       <tbody id="txBody">
-        <tr><td colspan="8" class="empty">選擇日期載入資料</td></tr>
+        <tr><td colspan="9" class="empty">選擇日期載入資料</td></tr>
       </tbody>
     </table>
   </div>
@@ -202,6 +238,7 @@
   <script>
     const dateSelect = document.getElementById("dateSelect");
     const txBody = document.getElementById("txBody");
+    let deltaChart = null;
 
     async function loadDates() {
       const dates = await fetch("/api/dates").then(r => r.json());
@@ -213,12 +250,14 @@
       const rows = await fetch(`/api/transactions?date=${date}`).then(r => r.json());
 
       if (rows.length === 0) {
-        txBody.innerHTML = `<tr><td colspan="8" class="empty">無資料</td></tr>`;
+        txBody.innerHTML = `<tr><td colspan="9" class="empty">無資料</td></tr>`;
         updateStats([]);
+        drawDeltaChart([]);
         return;
       }
 
       updateStats(rows);
+      drawDeltaChart(rows);
 
       txBody.innerHTML = rows.map(r => {
         const time = new Date(r.timestamp).toLocaleTimeString("zh-TW", { hour12: false });
@@ -235,6 +274,14 @@
         const fee    = r.fee_sol ? `${r.fee_sol}` : "—";
         const error  = r.error ? `<span class="error-cell">${escHtml(r.error)}</span>` : "—";
 
+        let deltaCell = "—";
+        if (r.usdc_delta !== undefined && r.usdc_delta !== "" && !isNaN(parseFloat(r.usdc_delta))) {
+          const d = parseFloat(r.usdc_delta);
+          const sign = d >= 0 ? "+" : "";
+          const cls = d >= 0 ? "delta-pos" : "delta-neg";
+          deltaCell = `<span class="${cls}">${sign}${d.toFixed(4)}</span>`;
+        }
+
         return `<tr>
           <td>${time}</td>
           <td class="${dirClass}">${dirLabel}</td>
@@ -242,6 +289,7 @@
           <td>${output}</td>
           <td>${badge}</td>
           <td style="font-family:monospace;color:#fbbf24">${fee}</td>
+          <td>${deltaCell}</td>
           <td>${txLink}</td>
           <td>${error}</td>
         </tr>`;
@@ -255,15 +303,18 @@
       let volume = 0;
       rows.forEach(r => {
         if (r.status !== "success") return;
-        if (r.direction === "SOL_TO_USDC") volume += parseFloat(r.output_amount) || 0;
-        else volume += parseFloat(r.input_amount) || 0;
+        if (r.direction === "USDC_TO_SOL") volume += parseFloat(r.input_amount) || 0;
+        else volume += parseFloat(r.output_amount) || 0;
       });
 
-      let totalFee = 0;
-      let feeCount = 0;
+      let totalFee = 0, feeCount = 0;
       rows.forEach(r => {
         if (r.fee_sol) { totalFee += parseFloat(r.fee_sol) || 0; feeCount++; }
       });
+
+      const deltaRows = rows.filter(r => r.usdc_delta !== undefined && r.usdc_delta !== "" && !isNaN(parseFloat(r.usdc_delta)));
+      const totalDelta = deltaRows.reduce((sum, r) => sum + parseFloat(r.usdc_delta), 0);
+      const avgDelta   = deltaRows.length > 0 ? totalDelta / deltaRows.length : null;
 
       document.getElementById("statTotal").textContent   = rows.length;
       document.getElementById("statSuccess").textContent = success;
@@ -271,6 +322,74 @@
       document.getElementById("statVolume").textContent  = volume.toFixed(2);
       document.getElementById("statFee").textContent     = totalFee.toFixed(6) + " SOL";
       document.getElementById("statFeeAvg").textContent  = feeCount > 0 ? (totalFee / feeCount).toFixed(6) + " SOL" : "—";
+      document.getElementById("statDeltaTotal").textContent = deltaRows.length > 0
+        ? (totalDelta >= 0 ? "+" : "") + totalDelta.toFixed(4) + " USDC" : "—";
+      document.getElementById("statDeltaAvg").textContent = avgDelta !== null
+        ? (avgDelta >= 0 ? "+" : "") + avgDelta.toFixed(4) + " USDC" : "—";
+    }
+
+    function drawDeltaChart(rows) {
+      const ctx = document.getElementById("deltaChart").getContext("2d");
+
+      // 只取有 usdc_delta 的成功 Leg2
+      const deltaRows = rows.filter(r => r.usdc_delta !== undefined && r.usdc_delta !== "" && !isNaN(parseFloat(r.usdc_delta)));
+
+      if (deltaChart) { deltaChart.destroy(); deltaChart = null; }
+
+      if (deltaRows.length === 0) return;
+
+      let cumulative = 0;
+      const labels = [];
+      const data = [];
+      deltaRows.forEach((r, i) => {
+        cumulative += parseFloat(r.usdc_delta);
+        labels.push(`#${i + 1} ${new Date(r.timestamp).toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit" })}`);
+        data.push(parseFloat(cumulative.toFixed(4)));
+      });
+
+      deltaChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label: "累積 USDC 損耗",
+            data,
+            borderColor: "#f87171",
+            backgroundColor: "rgba(248,113,113,0.08)",
+            borderWidth: 2,
+            pointRadius: data.length > 60 ? 0 : 3,
+            pointHoverRadius: 5,
+            fill: true,
+            tension: 0.3,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => `累積損耗：${ctx.parsed.y >= 0 ? "+" : ""}${ctx.parsed.y.toFixed(4)} USDC`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              ticks: { color: "#64748b", maxTicksLimit: 10 },
+              grid: { color: "#1e2130" },
+            },
+            y: {
+              ticks: {
+                color: "#64748b",
+                callback: v => (v >= 0 ? "+" : "") + v.toFixed(3),
+              },
+              grid: { color: "#2d3348" },
+            },
+          },
+        },
+      });
     }
 
     function escHtml(str) {

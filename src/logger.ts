@@ -12,6 +12,7 @@ export interface TxRecord {
   txHash: string;
   status: "success" | "failed";
   feeSol?: string;
+  usdcDelta?: string; // Leg2 only: USDC returned - USDC spent (negative = loss)
   error?: string;
 }
 
@@ -44,6 +45,7 @@ export async function logTransaction(record: TxRecord): Promise<void> {
       { id: "txHash", title: "tx_hash" },
       { id: "status", title: "status" },
       { id: "feeSol", title: "fee_sol" },
+      { id: "usdcDelta", title: "usdc_delta" },
       { id: "error", title: "error" },
     ],
     append: fileExists,

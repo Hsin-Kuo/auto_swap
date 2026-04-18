@@ -18,7 +18,7 @@ export const CONFIG = {
   // Swap settings
   MIN_AMOUNT_USD: 2,
   MAX_AMOUNT_USD: 13,
-  SLIPPAGE_BPS: 100, // 1%
+  SLIPPAGE_BPS: 150, // 1.5%
 
   // Schedule: ~100 txs/day spread over 24h
   DAILY_TX_COUNT: 100,

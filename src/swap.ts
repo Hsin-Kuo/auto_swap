@@ -94,6 +94,7 @@ export async function getSolPrice(): Promise<number> {
 }
 
 // Execute a swap: SOL -> USDC or USDC -> SOL
+// amountRawOverride: pass exact lamports/units directly, bypassing USD conversion
 export async function executeSwap(
   rpc: RpcManager,
   wallet: Keypair,
@@ -101,14 +102,18 @@ export async function executeSwap(
   amountUSD: number,
   gasTracker: GasTracker,
   solPrice: number,
+  amountRawOverride?: number,
 ): Promise<SwapResult> {
   let inputMint: string;
   let outputMint: string;
   let amountRaw: number;
 
-  if (direction === "SOL_TO_USDC") {
+  if (amountRawOverride !== undefined) {
+    amountRaw = amountRawOverride;
+    inputMint = direction === "SOL_TO_USDC" ? CONFIG.SOL_MINT : CONFIG.USDC_MINT;
+    outputMint = direction === "SOL_TO_USDC" ? CONFIG.USDC_MINT : CONFIG.SOL_MINT;
+  } else if (direction === "SOL_TO_USDC") {
     const solAmount = amountUSD / solPrice;
-
     inputMint = CONFIG.SOL_MINT;
     outputMint = CONFIG.USDC_MINT;
     amountRaw = Math.round(solAmount * 10 ** SOL_DECIMALS);
