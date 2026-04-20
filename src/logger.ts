@@ -4,6 +4,7 @@ import { CONFIG } from "./config.js";
 
 export interface TxRecord {
   timestamp: string;
+  type: "leg1" | "leg2" | "stopped" | "balance_snapshot";
   direction: "SOL_TO_USDC" | "USDC_TO_SOL";
   inputAmount: string;
   outputAmount: string;
@@ -12,7 +13,7 @@ export interface TxRecord {
   txHash: string;
   status: "success" | "failed";
   feeSol?: string;
-  usdcDelta?: string; // Leg2 only: USDC returned - USDC spent (negative = loss)
+  usdcDelta?: string; // leg2 only: USDC returned - USDC spent (negative = loss)
   error?: string;
 }
 
@@ -47,6 +48,7 @@ export async function logTransaction(record: TxRecord): Promise<void> {
       { id: "feeSol", title: "fee_sol" },
       { id: "usdcDelta", title: "usdc_delta" },
       { id: "error", title: "error" },
+      { id: "type", title: "type" },
     ],
     append: fileExists,
   });

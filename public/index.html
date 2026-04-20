@@ -160,6 +160,21 @@
     .delta-neg { color: #f87171; font-family: monospace; }
     .delta-pos { color: #4ade80; font-family: monospace; }
 
+    .type-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .type-leg1     { background: #1e3a5f; color: #60a5fa; }
+    .type-leg2     { background: #1a3a2a; color: #4ade80; }
+    .type-stopped  { background: #450a0a; color: #f87171; }
+    .type-snapshot { background: #1e2a3a; color: #94a3b8; }
+
+    tr.row-stopped  td { background: #1a0a0a; }
+    tr.row-snapshot td { background: #131820; color: #64748b; font-size: 12px; }
+
     .empty {
       text-align: center;
       padding: 48px;
@@ -219,7 +234,7 @@
       <thead>
         <tr>
           <th>時間</th>
-          <th>方向</th>
+          <th>類型</th>
           <th>輸入金額</th>
           <th>輸出金額</th>
           <th>狀態</th>
@@ -230,7 +245,7 @@
         </tr>
       </thead>
       <tbody id="txBody">
-        <tr><td colspan="9" class="empty">選擇日期載入資料</td></tr>
+        <tr><td colspan="8" class="empty">選擇日期載入資料</td></tr>
       </tbody>
     </table>
   </div>
@@ -250,7 +265,7 @@
       const rows = await fetch(`/api/transactions?date=${date}`).then(r => r.json());
 
       if (rows.length === 0) {
-        txBody.innerHTML = `<tr><td colspan="9" class="empty">無資料</td></tr>`;
+        txBody.innerHTML = `<tr><td colspan="8" class="empty">無資料</td></tr>`;
         updateStats([]);
         drawDeltaChart([]);
         return;
@@ -282,9 +297,29 @@
           deltaCell = `<span class="${cls}">${sign}${d.toFixed(4)}</span>`;
         }
 
+        const typeLabel = { leg1: "Leg 1　USDC → SOL", leg2: "Leg 2　SOL → USDC", stopped: "⚠ Bot 停止", balance_snapshot: "日初快照" }[r.type] ?? r.type ?? "—";
+        const typeCls   = { leg1: "type-leg1", leg2: "type-leg2", stopped: "type-stopped", balance_snapshot: "type-snapshot" }[r.type] ?? "";
+        const rowCls    = r.type === "stopped" ? " class=\"row-stopped\"" : r.type === "balance_snapshot" ? " class=\"row-snapshot\"" : "";
+
+        if (r.type === "stopped") {
+          return `<tr${rowCls}>
+            <td>${time}</td>
+            <td colspan="7"><span class="type-badge ${typeCls}">${typeLabel}</span> <span class="error-cell">${escHtml(r.error ?? "")}</span></td>
+            <td>—</td>
+          </tr>`;
+        }
+
+        if (r.type === "balance_snapshot") {
+          return `<tr${rowCls}>
+            <td>${time}</td>
+            <td colspan="7"><span class="type-badge ${typeCls}">${typeLabel} ${snapDatetime(r.timestamp)}</span>&nbsp;&nbsp;SOL: <b>${r.input_amount}</b>&nbsp;&nbsp;USDC: <b>${r.output_amount}</b></td>
+            <td>—</td>
+          </tr>`;
+        }
+
         return `<tr>
           <td>${time}</td>
-          <td class="${dirClass}">${dirLabel}</td>
+          <td><span class="type-badge ${typeCls}">${typeLabel}</span></td>
           <td>${input}</td>
           <td>${output}</td>
           <td>${badge}</td>
@@ -390,6 +425,19 @@
           },
         },
       });
+    }
+
+    function snapDatetime(ts) {
+      const d = new Date(ts);
+      const pad = n => String(n).padStart(2, "0");
+      const tpe = new Date(d.getTime() + 8 * 3600_000);
+      const yyyy = tpe.getUTCFullYear();
+      const mm   = pad(tpe.getUTCMonth() + 1);
+      const dd   = pad(tpe.getUTCDate());
+      const HH   = pad(tpe.getUTCHours());
+      const MM   = pad(tpe.getUTCMinutes());
+      const SS   = pad(tpe.getUTCSeconds());
+      return `${yyyy}${mm}${dd} ${HH}:${MM}:${SS}`;
     }
 
     function escHtml(str) {

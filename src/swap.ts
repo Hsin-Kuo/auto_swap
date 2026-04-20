@@ -95,6 +95,7 @@ export async function getSolPrice(): Promise<number> {
 
 // Execute a swap: SOL -> USDC or USDC -> SOL
 // amountRawOverride: pass exact lamports/units directly, bypassing USD conversion
+// maxFeeLamportsOverride: override CONFIG.MAX_FEE_LAMPORTS for this call
 export async function executeSwap(
   rpc: RpcManager,
   wallet: Keypair,
@@ -103,6 +104,7 @@ export async function executeSwap(
   gasTracker: GasTracker,
   solPrice: number,
   amountRawOverride?: number,
+  maxFeeLamportsOverride?: number,
 ): Promise<SwapResult> {
   let inputMint: string;
   let outputMint: string;
@@ -140,7 +142,8 @@ export async function executeSwap(
     conn.getFeeForMessage(tx.message),
   );
   const estimatedFee = feeResult.value;
-  if (estimatedFee !== null && estimatedFee > CONFIG.MAX_FEE_LAMPORTS) {
+  const maxFee = maxFeeLamportsOverride ?? CONFIG.MAX_FEE_LAMPORTS;
+  if (estimatedFee !== null && estimatedFee > maxFee) {
     const feeSol = (estimatedFee / 1e9).toFixed(6);
     throw new FeeExceededError(`預估手續費 ${feeSol} SOL 超過上限，跳過本次 swap`);
   }
@@ -164,31 +167,56 @@ export async function executeSwap(
     });
   });
 
-  // Get actual fee from confirmed transaction
-  let feeLamports = 5000; // default base fee
+  // Get actual fee and output amounts from confirmed transaction
+  let feeLamports = 5000;
+  let actualOutAmount: number | null = null;
   try {
     const txDetails = await rpc.withFallback((conn) =>
       conn.getTransaction(txHash, {
         maxSupportedTransactionVersion: 0,
       }),
     );
-    if (txDetails?.meta?.fee) {
-      feeLamports = txDetails.meta.fee;
+    if (txDetails?.meta) {
+      feeLamports = txDetails.meta.fee ?? feeLamports;
+
+      if (txDetails.meta.err !== null && txDetails.meta.err !== undefined) {
+        throw new Error(`Transaction failed on-chain: ${JSON.stringify(txDetails.meta.err)}`);
+      }
+
+      const walletKey = wallet.publicKey.toBase58();
+      const pre  = txDetails.meta.preTokenBalances  ?? [];
+      const post = txDetails.meta.postTokenBalances ?? [];
+
+      if (direction === "SOL_TO_USDC") {
+        // 找錢包的 USDC token account 餘額變化
+        const postUsdc = post.find(b => b.owner === walletKey && b.mint === CONFIG.USDC_MINT);
+        const preUsdc  = pre.find(b  => b.owner === walletKey && b.mint === CONFIG.USDC_MINT);
+        if (postUsdc) {
+          const postAmt = Number(postUsdc.uiTokenAmount.amount);
+          const preAmt  = preUsdc ? Number(preUsdc.uiTokenAmount.amount) : 0;
+          actualOutAmount = (postAmt - preAmt) / 10 ** USDC_DECIMALS;
+        }
+      } else {
+        // USDC_TO_SOL：實際 SOL 增加量 = 淨變化 + 手續費（手續費已從餘額扣除）
+        const preBalance  = txDetails.meta.preBalances[0]  ?? 0;
+        const postBalance = txDetails.meta.postBalances[0] ?? 0;
+        actualOutAmount = (postBalance - preBalance + feeLamports) / 1e9;
+      }
     }
   } catch {
-    // Use default fee estimate if lookup fails
+    // fall back to quote estimate
   }
   gasTracker.record(feeLamports);
 
-  const inDecimals = direction === "SOL_TO_USDC" ? SOL_DECIMALS : USDC_DECIMALS;
+  const inDecimals  = direction === "SOL_TO_USDC" ? SOL_DECIMALS  : USDC_DECIMALS;
   const outDecimals = direction === "SOL_TO_USDC" ? USDC_DECIMALS : SOL_DECIMALS;
+  const estimatedOut = Number(quote.outAmount) / 10 ** outDecimals;
+  const resolvedOut  = actualOutAmount ?? estimatedOut;
 
   return {
     txHash,
     feeLamports,
     inAmount: (amountRaw / 10 ** inDecimals).toFixed(inDecimals === 9 ? 6 : 2),
-    outAmount: (Number(quote.outAmount) / 10 ** outDecimals).toFixed(
-      outDecimals === 9 ? 6 : 2,
-    ),
+    outAmount: resolvedOut.toFixed(outDecimals === 9 ? 6 : 2),
   };
 }

@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "setup": "tsx src/setup.ts",
-    "start": "tsx src/index.ts",
+    "start": "tsx --no-deprecation src/index.ts",
     "dashboard": "tsx src/server.ts",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"

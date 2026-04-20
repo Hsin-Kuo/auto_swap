@@ -1,3 +1,4 @@
+import { createInterface } from "readline";
 import { loadWallet } from "./wallet.js";
 import { executeSwap, getSolPrice, FeeExceededError } from "./swap.js";
 import { logTransaction, type TxRecord } from "./logger.js";
@@ -6,6 +7,48 @@ import { checkBalance, getSolBalance, getUsdcBalance } from "./balance.js";
 import { GasTracker } from "./gas-tracker.js";
 import { RpcManager } from "./rpc.js";
 import { CONFIG } from "./config.js";
+
+interface RunConfig {
+  minAmountUSD: number;
+  maxAmountUSD: number;
+  dailyRoundTripCount: number;
+  minIntervalSec: number;
+  maxIntervalSec: number;
+}
+
+async function logDailySnapshot(rpc: RpcManager, wallet: import("@solana/web3.js").Keypair): Promise<void> {
+  const sol  = await getSolBalance(rpc, wallet);
+  const usdc = await getUsdcBalance(rpc, wallet);
+  await logTransaction({
+    timestamp: new Date().toISOString(),
+    type: "balance_snapshot",
+    direction: "SOL_TO_USDC",
+    inputAmount: sol.toFixed(6),
+    inputToken: "SOL",
+    outputAmount: usdc.toFixed(2),
+    outputToken: "USDC",
+    txHash: "",
+    status: "success",
+  });
+  console.log(`[Snapshot] SOL: ${sol.toFixed(6)} | USDC: ${usdc.toFixed(2)}`);
+}
+
+async function stopBot(reason: string): Promise<never> {
+  console.error(`[Stop] ${reason}`);
+  await logTransaction({
+    timestamp: new Date().toISOString(),
+    type: "stopped",
+    direction: "SOL_TO_USDC",
+    inputAmount: "",
+    outputAmount: "",
+    inputToken: "",
+    outputToken: "",
+    txHash: "",
+    status: "failed",
+    error: reason,
+  });
+  process.exit(1);
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,12 +60,63 @@ function formatTime(ms: number): string {
   return `${min}m ${sec}s`;
 }
 
+async function promptConfig(): Promise<RunConfig> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (question: string): Promise<string> =>
+    new Promise((resolve) => rl.question(question, resolve));
+
+  const defaults: RunConfig = {
+    minAmountUSD: CONFIG.MIN_AMOUNT_USD,
+    maxAmountUSD: CONFIG.MAX_AMOUNT_USD,
+    dailyRoundTripCount: CONFIG.DAILY_ROUND_TRIP_COUNT,
+    minIntervalSec: CONFIG.MIN_INTERVAL_SEC,
+    maxIntervalSec: CONFIG.MAX_INTERVAL_SEC,
+  };
+
+  console.log("=== 參數設定 ===\n");
+  console.log(`  1) 使用預設值`);
+  console.log(`       金額 $${defaults.minAmountUSD}–$${defaults.maxAmountUSD}　每日 ${defaults.dailyRoundTripCount} 次　間隔 ${defaults.minIntervalSec}s–${defaults.maxIntervalSec}s`);
+  console.log(`  2) 自訂\n`);
+
+  const choice = (await ask("選擇 [1]: ")).trim();
+  if (choice !== "2") {
+    rl.close();
+    console.log();
+    return defaults;
+  }
+
+  console.log();
+  const parseFloat2 = (s: string, def: number) => { const n = parseFloat(s.trim()); return isNaN(n) ? def : n; };
+  const parseInt2   = (s: string, def: number) => { const n = parseInt(s.trim(), 10); return isNaN(n) ? def : n; };
+
+  const minAmt  = parseFloat2(await ask(`交易金額下限 USD [${defaults.minAmountUSD}]: `), defaults.minAmountUSD);
+  const maxAmt  = parseFloat2(await ask(`交易金額上限 USD [${defaults.maxAmountUSD}]: `), defaults.maxAmountUSD);
+  const rtCount = parseInt2(await ask(`每日 round trip 次數 [${defaults.dailyRoundTripCount}]: `), defaults.dailyRoundTripCount);
+  const minInt  = parseInt2(await ask(`交易間隔下限（秒）[${defaults.minIntervalSec}]: `), defaults.minIntervalSec);
+  const maxInt  = parseInt2(await ask(`交易間隔上限（秒）[${defaults.maxIntervalSec}]: `), defaults.maxIntervalSec);
+
+  rl.close();
+  console.log();
+
+  return {
+    minAmountUSD: minAmt,
+    maxAmountUSD: Math.max(maxAmt, minAmt),
+    dailyRoundTripCount: rtCount,
+    minIntervalSec: minInt,
+    maxIntervalSec: Math.max(maxInt, minInt),
+  };
+}
+
 async function main(): Promise<void> {
-  console.log("=== Solana Auto Swap Bot (Round-trip mode: USDC→SOL→USDC) ===");
-  console.log(`Target: ~${CONFIG.DAILY_TX_COUNT} txs/day (2 txs per round-trip)`);
-  console.log(`Amount range: $${CONFIG.MIN_AMOUNT_USD} - $${CONFIG.MAX_AMOUNT_USD}`);
-  console.log(`Interval: ${CONFIG.MIN_INTERVAL_SEC}s - ${CONFIG.MAX_INTERVAL_SEC}s`);
-  console.log(`SOL reserve: ${CONFIG.MIN_SOL_RESERVE} SOL`);
+  console.log("=== Solana Auto Swap Bot (Round-trip mode: USDC→SOL→USDC) ===\n");
+
+  const run = await promptConfig();
+
+  console.log(`Target: ~${run.dailyRoundTripCount} round-trips/day (~${run.dailyRoundTripCount * 2} txs)`);
+  console.log(`Amount range: $${run.minAmountUSD} - $${run.maxAmountUSD}`);
+  console.log(`Interval: ${run.minIntervalSec}s - ${run.maxIntervalSec}s`);
+  console.log(`SOL reserve (Leg2): ${CONFIG.MIN_SOL_RESERVE} SOL`);
+  console.log(`SOL min for gas:    ${CONFIG.MIN_SOL_FOR_GAS} SOL`);
   console.log(`USDC reserve: ${CONFIG.MIN_USDC_RESERVE} USDC`);
   console.log(`Daily gas budget: ${CONFIG.DAILY_GAS_BUDGET_SOL} SOL\n`);
 
@@ -37,12 +131,11 @@ async function main(): Promise<void> {
   console.log(`SOL Balance:  ${solBal.toFixed(4)} SOL`);
   console.log(`USDC Balance: ${usdcBal.toFixed(2)} USDC\n`);
 
-  if (solBal < CONFIG.MIN_SOL_RESERVE) {
-    console.error(
-      `SOL balance (${solBal.toFixed(4)}) below minimum reserve (${CONFIG.MIN_SOL_RESERVE}). Exiting.`,
-    );
-    process.exit(1);
+  if (solBal < CONFIG.MIN_SOL_FOR_GAS) {
+    await stopBot(`SOL 餘額不足以支付 gas（${solBal.toFixed(6)} SOL < ${CONFIG.MIN_SOL_FOR_GAS} SOL）`);
   }
+
+  await logDailySnapshot(rpc, wallet);
 
   let txCount = 0;
   let consecutiveFailures = 0;
@@ -59,11 +152,12 @@ async function main(): Promise<void> {
       tomorrow.setHours(0, 0, 0, 0);
       const msUntilMidnight = tomorrow.getTime() - now.getTime() + 60_000;
       await sleep(msUntilMidnight);
+      await logDailySnapshot(rpc, wallet);
       continue;
     }
 
-    const amountUSD = randomAmountUSD();
-    const delayMs = randomDelayMs();
+    const amountUSD = randomAmountUSD(run.minAmountUSD, run.maxAmountUSD);
+    const delayMs = randomDelayMs(run.minIntervalSec, run.maxIntervalSec);
 
     // Get SOL price for balance check
     let solPrice: number;
@@ -75,13 +169,13 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Leg 1 是 USDC→SOL，檢查 USDC 餘額
-    const balCheck = await checkBalance(rpc, wallet, "USDC_TO_SOL", amountUSD, solPrice);
-    if (!balCheck.ok) {
-      console.log(`  [Balance] ${balCheck.reason}`);
-      console.log(`  Waiting 5 minutes before retry...\n`);
-      await sleep(300_000);
-      continue;
+    const leg1SolBal  = await getSolBalance(rpc, wallet);
+    const leg1UsdcBal = await getUsdcBalance(rpc, wallet);
+    if (leg1SolBal < CONFIG.MIN_SOL_FOR_GAS) {
+      await stopBot(`SOL 不足以支付 gas（${leg1SolBal.toFixed(6)} SOL < ${CONFIG.MIN_SOL_FOR_GAS}）`);
+    }
+    if (leg1UsdcBal - CONFIG.MIN_USDC_RESERVE < amountUSD) {
+      await stopBot(`USDC 不足（可用 ${(leg1UsdcBal - CONFIG.MIN_USDC_RESERVE).toFixed(2)}，需要 ${amountUSD.toFixed(2)}）`);
     }
 
     txCount++;
@@ -92,6 +186,7 @@ async function main(): Promise<void> {
     // --- Leg 1: USDC → SOL ---
     const leg1: TxRecord = {
       timestamp: new Date().toISOString(),
+      type: "leg1",
       direction: "USDC_TO_SOL",
       inputAmount: "",
       outputAmount: "",
@@ -101,7 +196,7 @@ async function main(): Promise<void> {
       status: "failed",
     };
 
-    let solReceivedLamports = 0;
+
     try {
       const result1 = await executeSwap(rpc, wallet, "USDC_TO_SOL", amountUSD, gasTracker, solPrice);
       leg1.txHash = result1.txHash;
@@ -109,7 +204,7 @@ async function main(): Promise<void> {
       leg1.outputAmount = result1.outAmount;
       leg1.feeSol = (result1.feeLamports / 1e9).toFixed(6);
       leg1.status = "success";
-      solReceivedLamports = Math.round(Number(result1.outAmount) * 1e9);
+
       consecutiveFailures = 0;
       console.log(`  ✓ Leg1: ${leg1.inputAmount} USDC → ${leg1.outputAmount} SOL`);
       console.log(`    tx: ${result1.txHash} | fee: ${leg1.feeSol} SOL`);
@@ -139,9 +234,21 @@ async function main(): Promise<void> {
     }
     await logTransaction(leg1);
 
+    // 讀取 Leg 1 後的實際 SOL 餘額，扣掉 reserve 才是可用量
+    // 額外預留 MAX_FEE_LAMPORTS_LEG2 作為 Leg 2 本身的 gas buffer，
+    // 避免 gas 從 reserve 扣除導致下一輪 balance check 失敗
+    const solAfterLeg1 = await getSolBalance(rpc, wallet);
+    const availableSolLamports = Math.floor((solAfterLeg1 - CONFIG.MIN_SOL_RESERVE) * 1e9);
+    if (availableSolLamports <= 0) {
+      console.log(`  [Leg2] Leg1 後 SOL 餘額不足以換回（${solAfterLeg1.toFixed(6)} SOL），跳過\n`);
+      await sleep(delayMs);
+      continue;
+    }
+
     // --- Leg 2: SOL → USDC (用 Leg1 實際收到的 SOL lamports 全部換回) ---
     const leg2: TxRecord = {
       timestamp: new Date().toISOString(),
+      type: "leg2",
       direction: "SOL_TO_USDC",
       inputAmount: "",
       outputAmount: "",
@@ -156,7 +263,7 @@ async function main(): Promise<void> {
       try {
         const result2 = await executeSwap(
           rpc, wallet, "SOL_TO_USDC", amountUSD, gasTracker, solPrice,
-          solReceivedLamports,
+          availableSolLamports, CONFIG.MAX_FEE_LAMPORTS_LEG2,
         );
         leg2.txHash = result2.txHash;
         leg2.inputAmount = result2.inAmount;
@@ -176,8 +283,14 @@ async function main(): Promise<void> {
         const errorMsg = err instanceof Error ? err.message : String(err);
         leg2.error = errorMsg;
         if (err instanceof FeeExceededError) {
-          console.log(`  ⚠ Leg2: ${err.message}`);
-          break;
+          console.log(`  ⚠ Leg2 attempt ${attempt}: ${err.message}`);
+          if (attempt < LEG2_MAX_RETRIES) {
+            console.log(`    等待 2 分鐘後重試...`);
+            await sleep(120_000);
+          } else {
+            console.log(`  ⚠ Leg2 手續費持續過高，殘留 SOL 將於下輪 sweep`);
+          }
+          continue;
         }
         console.log(`  ✗ Leg2 attempt ${attempt}/${LEG2_MAX_RETRIES} failed: ${errorMsg}`);
         if (attempt < LEG2_MAX_RETRIES) {
@@ -185,7 +298,7 @@ async function main(): Promise<void> {
           await sleep(10_000);
         } else {
           consecutiveFailures++;
-          console.log(`  ⚠ Leg2 gave up after ${LEG2_MAX_RETRIES} attempts — ${(solReceivedLamports / 1e9).toFixed(6)} SOL left in wallet`);
+          console.log(`  ⚠ Leg2 gave up after ${LEG2_MAX_RETRIES} attempts — ${(availableSolLamports / 1e9).toFixed(6)} SOL left in wallet`);
           if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
             console.log(`\n[Safety] ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Pausing 30 minutes...`);
             await sleep(1_800_000);
